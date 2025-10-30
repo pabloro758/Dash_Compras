@@ -1,7 +1,0 @@
-streamlit
-pandas
-plotly
-requests
-python-dotenv
-pymongo[srv]
-pytz
