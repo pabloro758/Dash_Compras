@@ -28,7 +28,8 @@ st.set_page_config(
 
 # ======= Função para verificar horário =======
 def dentro_do_horario():
-    agora = dt.datetime.now()
+    fuso = pytz.timezone("America/Sao_Paulo")
+    agora = dt.datetime.now(fuso)
     hora = agora.hour + agora.minute / 60
     dia_semana = agora.weekday()
     if dia_semana >= 5:
@@ -227,3 +228,4 @@ while True:
 
     time.sleep(REFRESH_INTERVAL)
     st.rerun()
+
