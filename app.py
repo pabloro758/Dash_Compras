@@ -10,20 +10,23 @@ import os
 from dotenv import load_dotenv
 
 # ======= CONFIGURAÇÕES =======
-load_dotenv()
+load_dotenv()  # Carrega as variáveis do arquivo .env
 
-API_TOKEN = os.getenv("AWESOME_API_KEY")
+API_TOKEN = os.getenv("AWESOME_API_KEY")  # seu token opcional
 MONGO_URI = os.getenv("MONGO_URI")
 
+# Endpoints
 API_URL_ATUAL = f"https://economia.awesomeapi.com.br/json/last/USD-BRL?token={API_TOKEN}"
 API_URL_HIST = "https://economia.awesomeapi.com.br/json/daily/USD-BRL/100"
-REFRESH_INTERVAL = 60
+REFRESH_INTERVAL = 60  # segundos
 
 st.set_page_config(
     page_title="Cotação do Dólar + Operações",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ======= Função para verificar horário =======
 
 def dentro_do_horario():
     fuso = pytz.timezone("America/Sao_Paulo")
@@ -34,9 +37,11 @@ def dentro_do_horario():
         return False
     return (8 <= hora <= 12.5) or (13.5 <= hora <= 18)
 
+# ======= Conexão MongoDB =======
 client = MongoClient(MONGO_URI)
 db = client["Zoho"]
 
+# ======= Funções auxiliares (mesmas) =======
 def carregar_pedidos():
     return pd.DataFrame(list(db["Pedidos - CRM"].find()))
 
@@ -58,6 +63,7 @@ def tratar_datas(df, colunas):
             df[col] = df[col].dt.tz_localize(None)
     return df
 
+# ======= Cotação ao vivo (usando token na API) =======
 def obter_cotacao():
     try:
         resp = requests.get(API_URL_ATUAL, timeout=5)
@@ -71,9 +77,11 @@ def obter_cotacao():
         st.error(f"Erro ao obter cotação: {e}")
         return None
 
+# ======= Carregar dados =======
 pedidos_raw = carregar_pedidos()
 ordens_raw = carregar_ordens()
 
+# ======= Tratar pedidos =======
 colunas_pedidos = ['Assunto', 'Status', 'Hora de Criação', 'Condição de Pagamento', 'Pedido Filho?', 'Quantidade Total', 'Produtos']
 df_pedidos = pedidos_raw[colunas_pedidos].copy()
 tratar_datas(df_pedidos, ["Hora de Criação"])
@@ -84,6 +92,7 @@ df_pedidos = df_pedidos.rename(columns={
 })
 df_pedidos['Data'] = df_pedidos['Hora de Criação'].dt.date
 
+# ======= Tratar ordens =======
 colunas_ordens = ['Nome Produto', 'Quantidade Paga', 'Armazém', 'Hora de Criação', "Pedido de Compra"]
 df_ordens = ordens_raw[colunas_ordens].copy()
 tratar_decimais(df_ordens, ["Quantidade Paga"])
@@ -95,6 +104,7 @@ df_ordens['Data'] = pd.to_datetime(df_ordens['Hora de Criação']).dt.date
 if "Número do Pedido" not in df_ordens.columns:
     df_ordens["Número do Pedido"] = df_ordens.index + 1
 
+# ======= Sidebar - filtros =======
 st.sidebar.header("Filtros")
 hoje = dt.datetime.now().date()
 data_filtrada = st.sidebar.date_input("Filtrar por data", value=hoje)
@@ -111,24 +121,23 @@ status_selecionado = st.sidebar.multiselect("Status", options=status_options, de
 armazens = df_ordens["Armazém"].dropna().unique() if "Armazém" in df_ordens.columns else []
 armazem_selecionado = st.sidebar.multiselect("Armazém", options=armazens, default=armazens)
 
+# ======= Layout placeholders =======
 col1, col2 = st.columns([2, 1])
 grafico_placeholder = col1.empty()
 cards_placeholder = col2.empty()
 status_placeholder = st.empty()
 
+# ======= Loop principal =======
 while True:
     if dentro_do_horario():
         try:
+            # --- Cotação atual ---
             cotacao = obter_cotacao()
             hora = dt.datetime.now().strftime("%H:%M:%S")
 
+            # --- Histórico ---
             hist_resp = requests.get(API_URL_HIST, timeout=5)
             hist_data = hist_resp.json()
-
-            # Certifique que hist_data é lista de registros (dicts)
-            if not isinstance(hist_data, list):
-                hist_data = [hist_data]
-
             df_hist = pd.DataFrame(hist_data)
             df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'], unit='s')
             df_hist['bid'] = df_hist['bid'].astype(float)
@@ -140,6 +149,7 @@ while True:
             cor_variacao = "lime" if variacao >= 0 else "red"
             fill_color = 'rgba(0,255,0,0.2)' if cor_variacao == "lime" else 'rgba(255,0,0,0.2)'
 
+            # --- Gráfico estilo Google Finance ---
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=df_hist['timestamp'],
@@ -167,6 +177,7 @@ while True:
 
             grafico_placeholder.plotly_chart(fig, use_container_width=True)
 
+            # --- Cards (cotação ao vivo e variação do dia) ---
             cards_html = f"""
             <div style='display:flex; flex-direction:column; gap:20px; margin-top:10px;'>
                 <div style='background:#0e1117; padding:20px; border-radius:15px; text-align:center;
@@ -185,6 +196,7 @@ while True:
             """
             cards_placeholder.markdown(cards_html, unsafe_allow_html=True)
 
+            # ======= Filtros =======
             df_pedidos_filtrado = df_pedidos[
                 (df_pedidos['Data'] == data_filtrada) &
                 (df_pedidos["Condição de Pagamento"].isin(condicao_selecionada)) &
@@ -196,6 +208,7 @@ while True:
                 (df_ordens["Armazém"].isin(armazem_selecionado))
             ]
 
+            # --- Tabelas ---
             tabela1, tabela2 = st.columns(2)
             with tabela1:
                 st.markdown("#### Pedidos de Venda")
