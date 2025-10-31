@@ -12,12 +12,12 @@ from dotenv import load_dotenv
 # ======= CONFIGURAÇÕES =======
 load_dotenv()  # Carrega as variáveis do arquivo .env
 
-API_TOKEN = os.getenv("AWESOME_API_KEY")  # seu token opcional
+API_TOKEN = os.getenv("AWESOME_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
 
 # Endpoints
 API_URL_ATUAL = f"https://economia.awesomeapi.com.br/json/last/USD-BRL?token={API_TOKEN}"
-API_URL_HIST = "https://economia.awesomeapi.com.br/json/daily/USD-BRL/100"
+API_URL_HIST = f"https://economia.awesomeapi.com.br/json/daily/USD-BRL/100?token={API_TOKEN}"
 REFRESH_INTERVAL = 60  # segundos
 
 st.set_page_config(
@@ -27,7 +27,6 @@ st.set_page_config(
 )
 
 # ======= Função para verificar horário =======
-
 def dentro_do_horario():
     fuso = pytz.timezone("America/Sao_Paulo")
     agora = dt.datetime.now(fuso)
@@ -38,15 +37,29 @@ def dentro_do_horario():
     return (8 <= hora <= 12.5) or (13.5 <= hora <= 18)
 
 # ======= Conexão MongoDB =======
-client = MongoClient(MONGO_URI)
-db = client["Zoho"]
+try:
+    client = MongoClient(MONGO_URI)
+    db = client["Zoho"]
+except Exception as e:
+    st.error(f"Erro ao conectar ao MongoDB: {e}")
+    st.stop()
 
-# ======= Funções auxiliares (mesmas) =======
+# ======= Funções auxiliares =======
 def carregar_pedidos():
-    return pd.DataFrame(list(db["Pedidos - CRM"].find()))
+    try:
+        dados = list(db["Pedidos - CRM"].find())
+        return pd.DataFrame(dados) if len(dados) > 0 else pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro ao carregar pedidos: {e}")
+        return pd.DataFrame()
 
 def carregar_ordens():
-    return pd.DataFrame(list(db["Ordens de compra - CRM"].find()))
+    try:
+        dados = list(db["Ordens de compra - CRM"].find())
+        return pd.DataFrame(dados) if len(dados) > 0 else pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro ao carregar ordens: {e}")
+        return pd.DataFrame()
 
 def tratar_decimais(df, colunas):
     for col in colunas:
@@ -63,10 +76,11 @@ def tratar_datas(df, colunas):
             df[col] = df[col].dt.tz_localize(None)
     return df
 
-# ======= Cotação ao vivo (usando token na API) =======
+# ======= Cotação ao vivo =======
 def obter_cotacao():
     try:
         resp = requests.get(API_URL_ATUAL, timeout=5)
+        resp.raise_for_status()
         data = resp.json()
         if "USDBRL" in data:
             return float(data["USDBRL"]["bid"])
@@ -80,6 +94,10 @@ def obter_cotacao():
 # ======= Carregar dados =======
 pedidos_raw = carregar_pedidos()
 ordens_raw = carregar_ordens()
+
+if pedidos_raw.empty or ordens_raw.empty:
+    st.warning("⚠️ Nenhum dado encontrado no MongoDB. Verifique as coleções.")
+    st.stop()
 
 # ======= Tratar pedidos =======
 colunas_pedidos = ['Assunto', 'Status', 'Hora de Criação', 'Condição de Pagamento', 'Pedido Filho?', 'Quantidade Total', 'Produtos']
@@ -137,19 +155,36 @@ while True:
 
             # --- Histórico ---
             hist_resp = requests.get(API_URL_HIST, timeout=5)
+            hist_resp.raise_for_status()
             hist_data = hist_resp.json()
+
+            # ✅ Verificação de estrutura
+            if not isinstance(hist_data, list) or len(hist_data) == 0:
+                st.error(f"⚠️ Erro ao obter histórico da API: {hist_data}")
+                time.sleep(REFRESH_INTERVAL)
+                st.rerun()
+
             df_hist = pd.DataFrame(hist_data)
+            if 'timestamp' not in df_hist.columns or 'bid' not in df_hist.columns:
+                st.error(f"⚠️ Dados inválidos retornados: {df_hist.head()}")
+                time.sleep(REFRESH_INTERVAL)
+                st.rerun()
+
             df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'], unit='s')
             df_hist['bid'] = df_hist['bid'].astype(float)
             df_hist = df_hist.sort_values('timestamp')
 
             ultimos_valores = df_hist['bid'].tolist()
+            if len(ultimos_valores) < 2:
+                st.warning("⚠️ Dados insuficientes para cálculo da variação.")
+                continue
+
             fechamento_anterior = ultimos_valores[-2]
             variacao = (ultimos_valores[-1] - fechamento_anterior) / fechamento_anterior * 100
             cor_variacao = "lime" if variacao >= 0 else "red"
             fill_color = 'rgba(0,255,0,0.2)' if cor_variacao == "lime" else 'rgba(255,0,0,0.2)'
 
-            # --- Gráfico estilo Google Finance ---
+            # --- Gráfico ---
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=df_hist['timestamp'],
@@ -177,7 +212,7 @@ while True:
 
             grafico_placeholder.plotly_chart(fig, use_container_width=True)
 
-            # --- Cards (cotação ao vivo e variação do dia) ---
+            # --- Cards (cotação e variação) ---
             cards_html = f"""
             <div style='display:flex; flex-direction:column; gap:20px; margin-top:10px;'>
                 <div style='background:#0e1117; padding:20px; border-radius:15px; text-align:center;
