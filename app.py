@@ -151,7 +151,8 @@ while True:
         try:
             # --- Cotação atual ---
             cotacao = obter_cotacao()
-            hora = dt.datetime.now().strftime("%H:%M:%S")
+            fuso = pytz.timezone("America/Sao_Paulo")
+            hora = dt.datetime.now(fuso).strftime("%H:%M:%S")
 
             # --- Histórico ---
             hist_resp = requests.get(API_URL_HIST, timeout=5)
@@ -264,3 +265,4 @@ while True:
 
     time.sleep(REFRESH_INTERVAL)
     st.rerun()
+
