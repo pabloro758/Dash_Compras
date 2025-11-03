@@ -79,7 +79,7 @@ def tratar_datas(df, colunas):
 # ======= Cotação ao vivo =======
 def obter_cotacao():
     try:
-        resp = requests.get(API_URL_ATUAL, timeout=5)
+        resp = requests.get(API_URL_ATUAL, timeout=25)
         resp.raise_for_status()
         data = resp.json()
         if "USDBRL" in data:
@@ -265,4 +265,5 @@ while True:
 
     time.sleep(REFRESH_INTERVAL)
     st.rerun()
+
 
