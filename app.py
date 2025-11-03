@@ -7,14 +7,11 @@ from pymongo import MongoClient
 import pytz
 import os
 from dotenv import load_dotenv
+import plotly.graph_objects as go
 
 # ======= CONFIGURAÇÕES =======
-load_dotenv()  # Carrega variáveis do .env
-
+load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
-
-API_URL_ATUAL = "https://economia.awesomeapi.com.br/json/last/USD-BRL"
-API_URL_HIST = "https://economia.awesomeapi.com.br/json/daily/USD-BRL/100"
 REFRESH_INTERVAL = 60  # segundos
 
 st.set_page_config(
@@ -35,7 +32,7 @@ except Exception as e:
 def carregar_pedidos():
     try:
         dados = list(db["Pedidos - CRM"].find())
-        return pd.DataFrame(dados) if len(dados) > 0 else pd.DataFrame()
+        return pd.DataFrame(dados) if dados else pd.DataFrame()
     except Exception as e:
         st.error(f"Erro ao carregar pedidos: {e}")
         return pd.DataFrame()
@@ -43,7 +40,7 @@ def carregar_pedidos():
 def carregar_ordens():
     try:
         dados = list(db["Ordens de compra - CRM"].find())
-        return pd.DataFrame(dados) if len(dados) > 0 else pd.DataFrame()
+        return pd.DataFrame(dados) if dados else pd.DataFrame()
     except Exception as e:
         st.error(f"Erro ao carregar ordens: {e}")
         return pd.DataFrame()
@@ -63,10 +60,11 @@ def tratar_datas(df, colunas):
             df[col] = df[col].dt.tz_localize(None)
     return df
 
-# ======= Cotação ao vivo =======
+# ======= Cotação ao vivo via AwesomeAPI =======
 def obter_cotacao():
     try:
-        resp = requests.get(API_URL_ATUAL, timeout=25)
+        url = "https://economia.awesomeapi.com.br/json/last/USD-BRL"
+        resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         if "USDBRL" in data:
@@ -78,7 +76,33 @@ def obter_cotacao():
         st.error(f"Erro ao obter cotação: {e}")
         return None
 
-# ======= Carregar dados =======
+# ======= Histórico via AwesomeAPI =======
+def obter_historico():
+    try:
+        url = "https://economia.awesomeapi.com.br/json/daily/USD-BRL/100"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if not isinstance(data, list) or len(data) == 0:
+            st.error(f"⚠️ Dados inválidos retornados da API: {data}")
+            return pd.DataFrame()
+
+        df_hist = pd.DataFrame(data)
+        if 'timestamp' not in df_hist.columns or 'bid' not in df_hist.columns:
+            st.error(f"⚠️ Estrutura inesperada: {df_hist.head()}")
+            return pd.DataFrame()
+
+        df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'], unit='s')
+        df_hist['bid'] = df_hist['bid'].astype(float)
+        df_hist = df_hist.sort_values('timestamp')
+        return df_hist
+
+    except Exception as e:
+        st.error(f"Erro ao obter histórico: {e}")
+        return pd.DataFrame()
+
+# ======= Carregar dados do MongoDB =======
 pedidos_raw = carregar_pedidos()
 ordens_raw = carregar_ordens()
 
@@ -91,20 +115,14 @@ colunas_pedidos = ['Assunto', 'Status', 'Hora de Criação', 'Condição de Paga
 df_pedidos = pedidos_raw[colunas_pedidos].copy()
 tratar_datas(df_pedidos, ["Hora de Criação"])
 tratar_decimais(df_pedidos, ["Quantidade Total"])
-df_pedidos = df_pedidos.rename(columns={
-    "Produtos": "Produto",
-    "Quantidade Total": "Qtd_Vendida"
-})
+df_pedidos = df_pedidos.rename(columns={"Produtos": "Produto", "Quantidade Total": "Qtd_Vendida"})
 df_pedidos['Data'] = df_pedidos['Hora de Criação'].dt.date
 
 # ======= Tratar ordens =======
 colunas_ordens = ['Nome Produto', 'Quantidade Paga', 'Armazém', 'Hora de Criação', "Pedido de Compra"]
 df_ordens = ordens_raw[colunas_ordens].copy()
 tratar_decimais(df_ordens, ["Quantidade Paga"])
-df_ordens = df_ordens.rename(columns={
-    "Nome Produto": "Produto",
-    "Quantidade Paga": "Qtd_Comprada"
-})
+df_ordens = df_ordens.rename(columns={"Nome Produto": "Produto", "Quantidade Paga": "Qtd_Comprada"})
 df_ordens['Data'] = pd.to_datetime(df_ordens['Hora de Criação']).dt.date
 if "Número do Pedido" not in df_ordens.columns:
     df_ordens["Número do Pedido"] = df_ordens.index + 1
@@ -132,40 +150,22 @@ grafico_placeholder = col1.empty()
 cards_placeholder = col2.empty()
 status_placeholder = st.empty()
 
-# ======= Loop principal (sem restrição de horário) =======
+# ======= Loop principal =======
 while True:
     try:
-        # --- Cotação atual ---
+        # --- Cotação ---
         cotacao = obter_cotacao()
         fuso = pytz.timezone("America/Sao_Paulo")
         hora = dt.datetime.now(fuso).strftime("%H:%M:%S")
 
         # --- Histórico ---
-        hist_resp = requests.get(API_URL_HIST, timeout=5)
-        hist_resp.raise_for_status()
-        hist_data = hist_resp.json()
-
-        if not isinstance(hist_data, list) or len(hist_data) == 0:
-            st.error(f"⚠️ Erro ao obter histórico da API: {hist_data}")
+        df_hist = obter_historico()
+        if df_hist.empty:
             time.sleep(REFRESH_INTERVAL)
             st.rerun()
-
-        df_hist = pd.DataFrame(hist_data)
-        if 'timestamp' not in df_hist.columns or 'bid' not in df_hist.columns:
-            st.error(f"⚠️ Dados inválidos retornados: {df_hist.head()}")
-            time.sleep(REFRESH_INTERVAL)
-            st.rerun()
-
-        df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'], unit='s')
-        df_hist['bid'] = df_hist['bid'].astype(float)
-        df_hist = df_hist.sort_values('timestamp')
 
         ultimos_valores = df_hist['bid'].tolist()
-        if len(ultimos_valores) < 2:
-            st.warning("⚠️ Dados insuficientes para cálculo da variação.")
-            continue
-
-        fechamento_anterior = ultimos_valores[-2]
+        fechamento_anterior = ultimos_valores[-2] if len(ultimos_valores) >= 2 else ultimos_valores[-1]
         variacao = (ultimos_valores[-1] - fechamento_anterior) / fechamento_anterior * 100
         cor_variacao = "lime" if variacao >= 0 else "red"
         fill_color = 'rgba(0,255,0,0.2)' if cor_variacao == "lime" else 'rgba(255,0,0,0.2)'
@@ -181,10 +181,8 @@ while True:
             fillcolor=fill_color,
             name='USD/BRL'
         ))
-
         y_min, y_max = min(ultimos_valores), max(ultimos_valores)
         y_margin = (y_max - y_min) * 0.08 if (y_max - y_min) > 0 else 0.2
-
         fig.update_layout(
             template='plotly_dark',
             margin=dict(l=20, r=20, t=20, b=20),
@@ -195,7 +193,6 @@ while True:
             paper_bgcolor="#0e1117",
             yaxis=dict(range=[y_min - y_margin, y_max + y_margin])
         )
-
         grafico_placeholder.plotly_chart(fig, use_container_width=True)
 
         # --- Cards ---
